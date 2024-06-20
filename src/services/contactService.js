@@ -5,131 +5,193 @@ const identifyContact = async ({ email, phoneNumber }) => {
   let primaryContact = null;
   let secondaryContacts = [];
 
-  const existingContacts = await Contact.findAll({
+  // Step 1: Find existing contacts by email or phone number
+  const existingContacts = await findExistingContacts(email, phoneNumber);
+
+  if (existingContacts.length > 0) {
+    // Step 2: Segregate the contacts into primary and secondary
+    const { primaryContacts, secondaryContactsList } =
+      segregateContacts(existingContacts);
+    secondaryContacts = secondaryContactsList;
+
+    if (primaryContacts.length > 0) {
+      primaryContact = primaryContacts[0];
+      // Step 3: Update secondary contacts if there are multiple primary contacts
+      secondaryContacts = await updateSecondaryContacts(
+        primaryContacts,
+        primaryContact.id,
+        secondaryContacts
+      );
+
+      // If there are multiple primary contacts, return the response
+      if (primaryContacts.length > 1) {
+        return responseBuilder(primaryContact, secondaryContacts);
+      }
+    }
+  }
+
+  // Step 4: If no primary contact found, fetch it from secondary contacts
+  if (!primaryContact && secondaryContacts.length > 0) {
+    primaryContact = await fetchPrimaryContact(secondaryContacts[0].linkedId);
+  }
+
+  // Step 5: If no primary contact found, create a new primary contact
+  if (!primaryContact) {
+    primaryContact = await createNewPrimaryContact(email, phoneNumber);
+  }
+
+  // Step 6: Fetch secondary contacts for the primary contact from the database
+  if (primaryContact) {
+    secondaryContacts = await fetchSecondaryContacts(
+      primaryContact,
+      secondaryContacts
+    );
+  }
+
+  // Step 7: Check if the primary contact matches the given email and phone number
+  if (!isSameContact(primaryContact, email, phoneNumber)) {
+    // Step 8: Create a new secondary contact if it doesn't already exist
+    secondaryContacts = await createSecondaryContact(
+      email,
+      phoneNumber,
+      primaryContact.id,
+      secondaryContacts
+    );
+  }
+
+  // Step 9: Build and return the response
+  return responseBuilder(primaryContact, secondaryContacts);
+};
+
+// Helper function to find existing contacts by email or phone number
+const findExistingContacts = async (email, phoneNumber) => {
+  return await Contact.findAll({
     where: {
       [Sequelize.Op.or]: [{ phoneNumber }, { email }],
     },
     order: [["createdAt", "ASC"]],
   });
+};
 
-  if (existingContacts.length > 0) {
-    // find all the contact with linkedPrecedence as primary (it can be more than one)
-    const exisitngPrimaryContacts = [];
+// Helper function to segregate contacts into primary and secondary
+const segregateContacts = (existingContacts) => {
+  const primaryContacts = existingContacts.filter(
+    (contact) => contact.linkPrecedence === "primary"
+  );
+  const secondaryContacts = existingContacts.filter(
+    (contact) => contact.linkPrecedence === "secondary"
+  );
 
-    // find all the exising primary contacts and store them in exisitngPrimaryContacts
-    for (const contact of existingContacts) {
-      if (contact.linkPrecedence === "primary") {
-        exisitngPrimaryContacts.push(contact);
-      }
-    }
+  return { primaryContacts, secondaryContactsList: secondaryContacts };
+};
 
-    // find all the exising secondary contacts and store them in secondaryContacts
-    for (const contact of existingContacts) {
-      if (contact.linkPrecedence === "secondary") {
-        secondaryContacts.push(contact);
-      }
-    }
-
-    if (exisitngPrimaryContacts.length > 0) {
-      primaryContact = exisitngPrimaryContacts[0];
-      const linkedId = primaryContact.id;
-
-      // there can only be 2 primary contacts max
-      // reason for that is one can have same email as given in request and other can have same phone number as given in request
-      // set the linkedPrecedence as secondary, linkedId as the primary contact id, email and phoneNumber as the given email and phoneNumber
-      // for the second primary contact
-      for (let i = 1; i < exisitngPrimaryContacts.length; i++) {
-        const contact = exisitngPrimaryContacts[i];
-        await contact.update({
-          linkPrecedence: "secondary",
-          linkedId,
-        });
-        secondaryContacts.push(contact);
-      }
-
-      // return the response only if there are more than 1 primary contacts
-      if (exisitngPrimaryContacts.length > 1)
-        return responseBuilder(primaryContact, secondaryContacts);
-    }
+// Helper function to update secondary contacts and return the updated list
+const updateSecondaryContacts = async (
+  primaryContacts,
+  primaryContactId,
+  secondaryContacts
+) => {
+  for (let i = 1; i < primaryContacts.length; i++) {
+    const contact = primaryContacts[i];
+    await contact.update({
+      linkPrecedence: "secondary",
+      linkedId: primaryContactId,
+    });
+    secondaryContacts.push(contact);
   }
+  return secondaryContacts;
+};
 
-  // if no primary contact found and there are secondary contacts, then try to fetch the primary contact from the db using the linkedId
-  if (!primaryContact && secondaryContacts.length > 0) {
-    primaryContact = await Contact.findOne({
-      where: {
-        id: secondaryContacts[0].linkedId,
-      },
+// Helper function to fetch the primary contact by linkedId
+const fetchPrimaryContact = async (linkedId) => {
+  return await Contact.findOne({
+    where: {
+      id: linkedId,
+    },
+  });
+};
+
+// Helper function to create a new primary contact
+const createNewPrimaryContact = async (email, phoneNumber) => {
+  if (email && phoneNumber) {
+    return await Contact.create({
+      email,
+      phoneNumber,
+      linkPrecedence: "primary",
     });
   }
+  return null;
+};
 
-  // even after trying to fetch the primary contact from the db, if no primary contact found, then create a new contact
-  if (!primaryContact) {
-    if (email && phoneNumber) {
-      primaryContact = await Contact.create({
-        email,
-        phoneNumber,
-        linkPrecedence: "primary",
-      });
-    }
-  }
-
-  if (primaryContact) {
-    // fetch all the secondary contacts for the primary contact from the db and add only if not present in secondaryContacts
-    const secondaryContactIds = secondaryContacts.map((c) => c.id);
-    const secondaryContactsFromDb = await Contact.findAll({
-      where: {
-        linkedId: primaryContact.id,
-        id: {
-          [Sequelize.Op.notIn]: secondaryContactIds,
-        },
+// Helper function to fetch secondary contacts for a given primary contact
+const fetchSecondaryContacts = async (
+  primaryContact,
+  existingSecondaryContacts
+) => {
+  const existingSecondaryContactIds = existingSecondaryContacts.map(
+    (c) => c.id
+  );
+  const newSecondaryContacts = await Contact.findAll({
+    where: {
+      linkedId: primaryContact.id,
+      id: {
+        [Sequelize.Op.notIn]: existingSecondaryContactIds,
       },
-    });
-    secondaryContacts = [...secondaryContacts, ...secondaryContactsFromDb];
-  }
+    },
+  });
+  return [...existingSecondaryContacts, ...newSecondaryContacts];
+};
 
+// Helper function to check if the primary contact matches the given email and phone number
+const isSameContact = (primaryContact, email, phoneNumber) => {
+  return (
+    primaryContact.email === email && primaryContact.phoneNumber === phoneNumber
+  );
+};
+
+// Helper function to create a new secondary contact if it doesn't already exist
+const createSecondaryContact = async (
+  email,
+  phoneNumber,
+  primaryContactId,
+  secondaryContacts
+) => {
   if (
-    primaryContact.email === email &&
-    primaryContact.phoneNumber === phoneNumber
-  ) {
-    console.log("do nothing");
-  }
-  // if the record not present in secondary contacts, create a new contact
-  else if (
     email &&
     phoneNumber &&
     !secondaryContacts.find(
       (c) => c.email === email && c.phoneNumber === phoneNumber
     )
   ) {
-    {
-      const contact = await Contact.create({
-        email,
-        phoneNumber,
-        linkPrecedence: "secondary",
-        linkedId: primaryContact.id,
-      });
-      secondaryContacts.push(contact);
-    }
+    const contact = await Contact.create({
+      email,
+      phoneNumber,
+      linkPrecedence: "secondary",
+      linkedId: primaryContactId,
+    });
+    secondaryContacts.push(contact);
   }
-
-  return responseBuilder(primaryContact, secondaryContacts);
+  return secondaryContacts;
 };
 
+// Helper function to build the response object
 const responseBuilder = (primaryContact, secondaryContacts) => {
-  const allEmailsToBeReturned = [
+  const allEmails = [
     primaryContact.email,
     ...secondaryContacts.map((c) => c.email),
-  ].filter((email, index, self) => self.indexOf(email) === index);
-
-  const allPhoneNumbersToBeReturned = [
+  ];
+  const allPhoneNumbers = [
     primaryContact.phoneNumber,
     ...secondaryContacts.map((c) => c.phoneNumber),
-  ].filter((phoneNumber, index, self) => self.indexOf(phoneNumber) === index);
+  ];
+
+  const uniqueEmails = [...new Set(allEmails)];
+  const uniquePhoneNumbers = [...new Set(allPhoneNumbers)];
 
   return {
     primaryContactId: primaryContact.id,
-    emails: allEmailsToBeReturned,
-    phoneNumbers: allPhoneNumbersToBeReturned,
+    emails: uniqueEmails,
+    phoneNumbers: uniquePhoneNumbers,
     secondaryContactIds: secondaryContacts.map((c) => c.id),
   };
 };
