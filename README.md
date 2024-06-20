@@ -35,7 +35,7 @@ npx nodemon src/app.js
 ```json
 {
   "contact": {
-    "primaryContactId": number,
+    "primaryContactId": 1,
     "emails": ["primary@example.com", "secondary@example.com"],
     "phoneNumbers": ["1234567890"],
     "secondaryContactIds": [2, 3]
