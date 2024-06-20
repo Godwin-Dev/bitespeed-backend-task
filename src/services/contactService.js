@@ -12,10 +12,6 @@ const identifyContact = async ({ email, phoneNumber }) => {
     order: [["createdAt", "ASC"]],
   });
 
-  console.log("existingContacts", existingContacts);
-
-  console.log("------------\n\n\n\n------------");
-
   if (existingContacts.length > 0) {
     // find all the contact with linkedPrecedence as primary (it can be more than one)
     const exisitngPrimaryContacts = [];
@@ -33,8 +29,6 @@ const identifyContact = async ({ email, phoneNumber }) => {
         secondaryContacts.push(contact);
       }
     }
-
-    console.log("exisitngPrimaryContacts", exisitngPrimaryContacts);
 
     if (exisitngPrimaryContacts.length > 0) {
       primaryContact = exisitngPrimaryContacts[0];
